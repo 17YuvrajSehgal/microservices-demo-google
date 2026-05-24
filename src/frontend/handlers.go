@@ -32,6 +32,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/frontend/genproto"
 	"github.com/GoogleCloudPlatform/microservices-demo/src/frontend/money"
 	"github.com/GoogleCloudPlatform/microservices-demo/src/frontend/validator"
@@ -536,6 +540,15 @@ func (fe *frontendServer) chooseAd(ctx context.Context, ctxKeys []string, log lo
 func renderHTTPError(log logrus.FieldLogger, r *http.Request, w http.ResponseWriter, err error, code int) {
 	log.WithField("error", err).Error("request error")
 	errMsg := fmt.Sprintf("%+v", err)
+
+	// M3.1: record the error on the active HTTP span. otelhttp wraps every
+	// inbound HTTP request, so SpanFromContext returns the right span.
+	span := oteltrace.SpanFromContext(r.Context())
+	span.RecordError(err)
+	span.SetStatus(otelcodes.Error, http.StatusText(code))
+	span.SetAttributes(
+		attribute.Int("http.status_code", code),
+	)
 
 	w.WriteHeader(code)
 

@@ -47,11 +47,23 @@ if (process.env.ENABLE_TRACING == "1") {
   const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
   const traceExporter = new OTLPTraceExporter({url: collectorUrl});
 
+  // M4.1: Prometheus metric exporter — exposes /metrics on PORT (default 9464).
+  let metricReader;
+  try {
+    const { PrometheusExporter } = require('@opentelemetry/exporter-prometheus');
+    const metricsPort = parseInt(process.env.METRICS_PORT || '9100', 10);
+    metricReader = new PrometheusExporter({ port: metricsPort });
+    logger.info(`Prometheus /metrics endpoint listening on :${metricsPort}`);
+  } catch (e) {
+    logger.warn(`Prometheus exporter init failed: ${e.message}`);
+  }
+
   const sdk = new opentelemetry.NodeSDK({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'paymentservice',
     }),
     traceExporter: traceExporter,
+    metricReader: metricReader,
   });
 
   registerInstrumentations({

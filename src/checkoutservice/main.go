@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/profiler"
@@ -33,14 +34,76 @@ import (
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/checkoutservice/genproto"
 	money "github.com/GoogleCloudPlatform/microservices-demo/src/checkoutservice/money"
+	rpclog "github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+// M3.1 + M3.2: helper that records a dep-call failure on the active span.
+// Sets bounded semantic-convention attributes (peer.service, db.operation
+// where applicable) so Tempo's structured search can find these spans.
+// No scenario/fault names — production-realistic only.
+func recordDepError(ctx context.Context, peerService, op string, err error) {
+	if err == nil {
+		return
+	}
+	span := oteltrace.SpanFromContext(ctx)
+	span.RecordError(err)
+	span.SetStatus(otelcodes.Error, "dep call failed")
+	span.SetAttributes(
+		attribute.String("peer.service", peerService),
+		attribute.String("rpc.method", op),
+	)
+}
+
+// orderItemsBucket returns a low-cardinality bucket label for an item count.
+// Used as a span attribute on PlaceOrder so traces can be sliced by load
+// shape without exploding cardinality.
+func orderItemsBucket(n int) string {
+	switch {
+	case n == 0:
+		return "0"
+	case n == 1:
+		return "1"
+	case n <= 3:
+		return "2-3"
+	case n <= 10:
+		return "4-10"
+	default:
+		return "10+"
+	}
+}
+
+// M4.4 business-event counters. Bounded labels only.
+var (
+	ordersPlacedTotal     metric.Int64Counter
+	orderValueUnitsTotal  metric.Int64Counter
+	checkoutMetricsInited bool
+)
+
+func initCheckoutMetrics() {
+	if checkoutMetricsInited {
+		return
+	}
+	checkoutMetricsInited = true
+	meter := otel.GetMeterProvider().Meter("checkoutservice")
+	ordersPlacedTotal, _ = meter.Int64Counter(
+		"orders_placed_total",
+		metric.WithDescription("Count of successful PlaceOrder responses by currency."),
+	)
+	orderValueUnitsTotal, _ = meter.Int64Counter(
+		"order_value_units_total",
+		metric.WithDescription("Sum of order subtotal units by currency."),
+	)
+}
 
 const (
 	listenPort  = "5050"
@@ -102,6 +165,20 @@ func main() {
 		log.Info("Profiling disabled.")
 	}
 
+	// M4.1: Prometheus /metrics endpoint on a separate port so it doesn't
+	// collide with the gRPC listener. Defaults to 9100; override with
+	// METRICS_PORT env var.
+	metricsPort := 9100
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			metricsPort = p
+		}
+	}
+	if _, err := rpclog.InitMetrics(log, metricsPort); err != nil {
+		log.Warnf("metrics init failed: %v", err)
+	}
+	initCheckoutMetrics()
+
 	port := listenPort
 	if os.Getenv("PORT") != "" {
 		port = os.Getenv("PORT")
@@ -137,6 +214,8 @@ func main() {
 			propagation.TraceContext{}, propagation.Baggage{}))
 	srv = grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.UnaryInterceptor(rpclog.UnaryServerInterceptor(log)),
+		grpc.StreamInterceptor(rpclog.StreamServerInterceptor(log)),
 	)
 
 	pb.RegisterCheckoutServiceServer(srv, svc)
@@ -213,7 +292,8 @@ func mustConnGRPC(ctx context.Context, conn **grpc.ClientConn, addr string) {
 	defer cancel()
 	*conn, err = grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithUnaryInterceptor(rpclog.UnaryClientInterceptor(log, "checkoutservice")))
 	if err != nil {
 		panic(errors.Wrapf(err, "grpc: failed to connect %s", addr))
 	}
@@ -230,15 +310,23 @@ func (cs *checkoutService) Watch(req *healthpb.HealthCheckRequest, ws healthpb.H
 func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (*pb.PlaceOrderResponse, error) {
 	log.Infof("[PlaceOrder] user_id=%q user_currency=%q", req.UserId, req.UserCurrency)
 
+	span := oteltrace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("app.user_currency", req.UserCurrency))
+
 	orderID, err := uuid.NewUUID()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, "uuid gen failed")
 		return nil, status.Errorf(codes.Internal, "failed to generate order uuid")
 	}
 
 	prep, err := cs.prepareOrderItemsAndShippingQuoteFromCart(ctx, req.UserId, req.UserCurrency, req.Address)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, "order prep failed")
 		return nil, status.Errorf(codes.Internal, err.Error())
 	}
+	span.SetAttributes(attribute.String("app.order_item_count_bucket", orderItemsBucket(len(prep.orderItems))))
 
 	total := pb.Money{CurrencyCode: req.UserCurrency,
 		Units: 0,
@@ -251,12 +339,16 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 
 	txID, err := cs.chargeCard(ctx, &total, req.CreditCard)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, "charge card failed")
 		return nil, status.Errorf(codes.Internal, "failed to charge card: %+v", err)
 	}
 	log.Infof("payment went through (transaction_id: %s)", txID)
 
 	shippingTrackingID, err := cs.shipOrder(ctx, req.Address, prep.cartItems)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, "ship order failed")
 		return nil, status.Errorf(codes.Unavailable, "shipping error: %+v", err)
 	}
 
@@ -275,6 +367,23 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 	} else {
 		log.Infof("order confirmation email sent to %q", req.Email)
 	}
+
+	// M4.4: increment business counters. Currency is bounded by the
+	// whitelisted set in frontend; units is the order subtotal.
+	if ordersPlacedTotal != nil {
+		attrs := metric.WithAttributes(attribute.String("currency", req.UserCurrency))
+		ordersPlacedTotal.Add(ctx, 1, attrs)
+		orderValueUnitsTotal.Add(ctx, total.Units, attrs)
+	}
+
+	// M2.3: business event log.
+	log.WithFields(logrus.Fields{
+		"event":    "order_placed",
+		"currency": req.UserCurrency,
+		"order_id": orderID.String(),
+		"item_count_bucket": orderItemsBucket(len(prep.orderItems)),
+	}).Info("order_placed")
+
 	resp := &pb.PlaceOrderResponse{Order: orderResult}
 	return resp, nil
 }
@@ -316,6 +425,7 @@ func (cs *checkoutService) quoteShipping(ctx context.Context, address *pb.Addres
 			Address: address,
 			Items:   items})
 	if err != nil {
+		recordDepError(ctx, "shippingservice", "GetQuote", err)
 		return nil, fmt.Errorf("failed to get shipping quote: %+v", err)
 	}
 	return shippingQuote.GetCostUsd(), nil
@@ -324,6 +434,7 @@ func (cs *checkoutService) quoteShipping(ctx context.Context, address *pb.Addres
 func (cs *checkoutService) getUserCart(ctx context.Context, userID string) ([]*pb.CartItem, error) {
 	cart, err := pb.NewCartServiceClient(cs.cartSvcConn).GetCart(ctx, &pb.GetCartRequest{UserId: userID})
 	if err != nil {
+		recordDepError(ctx, "cartservice", "GetCart", err)
 		return nil, fmt.Errorf("failed to get user cart during checkout: %+v", err)
 	}
 	return cart.GetItems(), nil
@@ -331,6 +442,7 @@ func (cs *checkoutService) getUserCart(ctx context.Context, userID string) ([]*p
 
 func (cs *checkoutService) emptyUserCart(ctx context.Context, userID string) error {
 	if _, err := pb.NewCartServiceClient(cs.cartSvcConn).EmptyCart(ctx, &pb.EmptyCartRequest{UserId: userID}); err != nil {
+		recordDepError(ctx, "cartservice", "EmptyCart", err)
 		return fmt.Errorf("failed to empty user cart during checkout: %+v", err)
 	}
 	return nil
@@ -343,6 +455,7 @@ func (cs *checkoutService) prepOrderItems(ctx context.Context, items []*pb.CartI
 	for i, item := range items {
 		product, err := cl.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
 		if err != nil {
+			recordDepError(ctx, "productcatalogservice", "GetProduct", err)
 			return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
 		}
 		price, err := cs.convertCurrency(ctx, product.GetPriceUsd(), userCurrency)
@@ -361,6 +474,7 @@ func (cs *checkoutService) convertCurrency(ctx context.Context, from *pb.Money, 
 		From:   from,
 		ToCode: toCurrency})
 	if err != nil {
+		recordDepError(ctx, "currencyservice", "Convert", err)
 		return nil, fmt.Errorf("failed to convert currency: %+v", err)
 	}
 	return result, err
@@ -371,6 +485,7 @@ func (cs *checkoutService) chargeCard(ctx context.Context, amount *pb.Money, pay
 		Amount:     amount,
 		CreditCard: paymentInfo})
 	if err != nil {
+		recordDepError(ctx, "paymentservice", "Charge", err)
 		return "", fmt.Errorf("could not charge the card: %+v", err)
 	}
 	return paymentResp.GetTransactionId(), nil
@@ -380,6 +495,9 @@ func (cs *checkoutService) sendOrderConfirmation(ctx context.Context, email stri
 	_, err := pb.NewEmailServiceClient(cs.emailSvcConn).SendOrderConfirmation(ctx, &pb.SendOrderConfirmationRequest{
 		Email: email,
 		Order: order})
+	if err != nil {
+		recordDepError(ctx, "emailservice", "SendOrderConfirmation", err)
+	}
 	return err
 }
 
@@ -388,6 +506,7 @@ func (cs *checkoutService) shipOrder(ctx context.Context, address *pb.Address, i
 		Address: address,
 		Items:   items})
 	if err != nil {
+		recordDepError(ctx, "shippingservice", "ShipOrder", err)
 		return "", fmt.Errorf("shipment failed: %+v", err)
 	}
 	return resp.GetTrackingId(), nil

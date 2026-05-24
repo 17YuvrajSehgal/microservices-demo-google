@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/profiler"
@@ -33,6 +34,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	rpclog "github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog"
 )
 
 const (
@@ -123,6 +126,18 @@ func main() {
 	} else {
 		log.Info("Profiling disabled.")
 	}
+
+	// M4.1: Prometheus /metrics endpoint on a separate port.
+	metricsPort := 9100
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			metricsPort = p
+		}
+	}
+	if _, err := rpclog.InitMetrics(log, metricsPort); err != nil {
+		log.Warnf("metrics init failed: %v", err)
+	}
+	initFrontendMetrics()
 
 	srvPort := port
 	if os.Getenv("PORT") != "" {
@@ -228,7 +243,8 @@ func mustConnGRPC(ctx context.Context, conn **grpc.ClientConn, addr string) {
 	defer cancel()
 	*conn, err = grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithUnaryInterceptor(rpclog.UnaryClientInterceptor(log, "frontend")))
 	if err != nil {
 		panic(errors.Wrapf(err, "grpc: failed to connect %s", addr))
 	}

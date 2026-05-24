@@ -75,6 +75,10 @@ func (lh *logHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"http.resp.took_ms": int64(time.Since(start) / time.Millisecond),
 			"http.resp.status":  rr.status,
 			"http.resp.bytes":   rr.b}).Debugf("request complete")
+		// M4.4: business event counter with bounded labels. Route is
+		// derived from the gorilla/mux route template (bounded); status
+		// is reduced to a 2xx/3xx/4xx/5xx class.
+		recordHTTPRequest(ctx, r, rr.status)
 	}()
 
 	ctx = context.WithValue(ctx, ctxKeyLog{}, log)

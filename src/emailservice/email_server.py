@@ -42,6 +42,9 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from logger import getJSONLogger
 logger = getJSONLogger('emailservice-server')
 
+# M2.1: shared per-RPC structured logging interceptor.
+from rpc_logging import RpcLoggingInterceptor
+
 # Loads confirmation email template from file
 env = Environment(
     loader=FileSystemLoader('templates'),
@@ -84,12 +87,18 @@ class EmailService(BaseEmailService):
     logger.info("Message sent: {}".format(response.rfc822_message_id))
 
   def SendOrderConfirmation(self, request, context):
+    from opentelemetry import trace as _otel_trace  # M3.1
+    from opentelemetry.trace import Status, StatusCode
+    span = _otel_trace.get_current_span()
     email = request.email
     order = request.order
 
     try:
       confirmation = template.render(order = order)
     except TemplateError as err:
+      # M3.1
+      span.record_exception(err)
+      span.set_status(Status(StatusCode.ERROR, "template render failed"))
       context.set_details("An error occurred when preparing the confirmation mail.")
       logger.error(err.message)
       context.set_code(grpc.StatusCode.INTERNAL)
@@ -98,6 +107,9 @@ class EmailService(BaseEmailService):
     try:
       EmailService.send_email(self.client, email, confirmation)
     except GoogleAPICallError as err:
+      # M3.1
+      span.record_exception(err)
+      span.set_status(Status(StatusCode.ERROR, "email send failed"))
       context.set_details("An error occurred when sending the email.")
       print(err.message)
       context.set_code(grpc.StatusCode.INTERNAL)
@@ -116,7 +128,10 @@ class HealthCheck():
       status=health_pb2.HealthCheckResponse.SERVING)
 
 def start(dummy_mode):
-  server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),)
+  server = grpc.server(
+      futures.ThreadPoolExecutor(max_workers=10),
+      interceptors=[RpcLoggingInterceptor(logger)],  # M2.1
+  )
   service = None
   if dummy_mode:
     service = DummyEmailService()

@@ -4,14 +4,25 @@ go 1.25.0
 
 toolchain go1.26.1
 
+// M2.1: shared RPC logging interceptor.
+replace github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog => ../_shared-go/rpclog
+
 require (
 	cloud.google.com/go/profiler v0.4.3
+	github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog v0.0.0
+	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.4
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0
+	go.opentelemetry.io/otel v1.39.0
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.39.0
+	go.opentelemetry.io/otel/sdk v1.39.0
 	golang.org/x/net v0.52.0
 	google.golang.org/grpc v1.79.2
 	google.golang.org/protobuf v1.36.11
 )
 
+// Promoted from indirect by M1.3; the in-source imports above force them
+// to direct. `go mod tidy` during the docker build will reconcile.
 require (
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.17.0 // indirect
@@ -25,10 +36,10 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.7 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.63.0 // indirect
-	go.opentelemetry.io/otel v1.39.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	go.opentelemetry.io/proto/otlp v1.7.0 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

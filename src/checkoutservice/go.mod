@@ -4,11 +4,16 @@ go 1.25.0
 
 toolchain go1.26.1
 
+// M2.1: shared RPC logging interceptor, vendored as a sibling module.
+// The hard-fork policy (M0.2) accepts this divergence from upstream Google.
+replace github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog => ../_shared-go/rpclog
+
 require (
 	cloud.google.com/go/profiler v0.4.3
 	github.com/google/uuid v1.6.0
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.4
+	github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog v0.0.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.42.0

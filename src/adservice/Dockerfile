@@ -37,8 +37,24 @@ FROM eclipse-temurin:25.0.2_10-jre-alpine@sha256:5fcc27581b238efbfda93da3a103f59
 #     | tar xzv -C /opt/cprof && \
 #     rm -rf profiler_java_agent.tar.gz
 
+# OpenTelemetry Java agent (added by M1.2; see microservice-changes-todo.md).
+# Drop-in JAR approach: zero application code changes. Activated by
+# JAVA_TOOL_OPTIONS=-javaagent:/opt/otel/javaagent.jar in the deployment.
+# Version pinned to a known-good release; bump in sync with the rest of
+# the OTel libraries during quarterly cherry-pick (M0.2 cadence).
+ARG OTEL_AGENT_VERSION=2.8.0
+RUN apk add --no-cache wget \
+ && mkdir -p /opt/otel \
+ && wget -q -O /opt/otel/javaagent.jar \
+    https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_AGENT_VERSION}/opentelemetry-javaagent.jar \
+ && apk del wget
+
 WORKDIR /app
 COPY --from=builder /app .
+
+# Activate the agent for every JVM started in this image. The deployment
+# manifest provides OTEL_SERVICE_NAME / OTEL_EXPORTER_OTLP_ENDPOINT etc.
+ENV JAVA_TOOL_OPTIONS="-javaagent:/opt/otel/javaagent.jar"
 
 EXPOSE 9555
 ENTRYPOINT ["/app/build/install/hipstershop/bin/AdService"]

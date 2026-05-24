@@ -19,6 +19,7 @@ const protoLoader = require('@grpc/proto-loader');
 const charge = require('./charge');
 
 const logger = require('./logger')
+const { wrap: rpcLog } = require('@hipstershop/rpc-logging'); // M2.1
 
 class HipsterShopServer {
   constructor(protoRoot, port = HipsterShopServer.PORT) {
@@ -85,17 +86,20 @@ class HipsterShopServer {
     const hipsterShopPackage = this.packages.hipsterShop.hipstershop;
     const healthPackage = this.packages.health.grpc.health.v1;
 
+    // M2.1: wrap handlers in the shared rpc-logging interceptor.
     this.server.addService(
       hipsterShopPackage.PaymentService.service,
       {
-        charge: HipsterShopServer.ChargeServiceHandler.bind(this)
+        charge: rpcLog(logger, '/hipstershop.PaymentService/Charge',
+                       HipsterShopServer.ChargeServiceHandler.bind(this))
       }
     );
 
     this.server.addService(
       healthPackage.Health.service,
       {
-        check: HipsterShopServer.CheckHandler.bind(this)
+        check: rpcLog(logger, '/grpc.health.v1.Health/Check',
+                      HipsterShopServer.CheckHandler.bind(this))
       }
     );
   }

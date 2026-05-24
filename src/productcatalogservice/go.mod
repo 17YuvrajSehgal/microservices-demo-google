@@ -4,10 +4,14 @@ go 1.25.0
 
 toolchain go1.26.1
 
+// M2.1: shared RPC logging interceptor.
+replace github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog => ../_shared-go/rpclog
+
 require (
 	cloud.google.com/go/alloydbconn v1.17.3
 	cloud.google.com/go/profiler v0.4.3
 	cloud.google.com/go/secretmanager v1.16.0
+	github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog v0.0.0
 	github.com/golang/protobuf v1.5.4
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pkg/errors v0.9.1

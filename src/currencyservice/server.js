@@ -76,6 +76,8 @@ else {
 const path = require('path');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
+const { wrap: rpcLog } = require('@hipstershop/rpc-logging'); // M2.1
+const otelApi = require('@opentelemetry/api'); // M3.1
 
 const MAIN_PROTO_PATH = path.join(__dirname, './proto/demo.proto');
 const HEALTH_PROTO_PATH = path.join(__dirname, './proto/grpc/health/v1/health.proto');
@@ -159,10 +161,22 @@ function convert (call, callback) {
       result.nanos = Math.floor(result.nanos);
       result.currency_code = request.to_code;
 
+      // M2.3 business event log.
+      logger.info({
+        event: 'currency_conversion_completed',
+        from_currency: from.currency_code,
+        to_currency: request.to_code,
+      }, 'currency_conversion_completed');
       logger.info(`conversion request successful`);
       callback(null, result);
     });
   } catch (err) {
+    // M3.1: mark the active span with the error.
+    const span = otelApi.trace.getActiveSpan();
+    if (span) {
+      span.recordException(err);
+      span.setStatus({ code: otelApi.SpanStatusCode.ERROR, message: 'conversion failed' });
+    }
     logger.error(`conversion request failed: ${err}`);
     callback(err.message);
   }
@@ -182,8 +196,16 @@ function check (call, callback) {
 function main () {
   logger.info(`Starting gRPC server on port ${PORT}...`);
   const server = new grpc.Server();
-  server.addService(shopProto.CurrencyService.service, {getSupportedCurrencies, convert});
-  server.addService(healthProto.Health.service, {check});
+  // M2.1: wrap handlers in the shared rpc-logging interceptor.
+  server.addService(shopProto.CurrencyService.service, {
+    getSupportedCurrencies: rpcLog(logger,
+      '/hipstershop.CurrencyService/GetSupportedCurrencies', getSupportedCurrencies),
+    convert: rpcLog(logger,
+      '/hipstershop.CurrencyService/Convert', convert),
+  });
+  server.addService(healthProto.Health.service, {
+    check: rpcLog(logger, '/grpc.health.v1.Health/Check', check),
+  });
 
   server.bindAsync(
     `[::]:${PORT}`,

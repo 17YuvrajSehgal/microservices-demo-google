@@ -18,19 +18,32 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/profiler"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/shippingservice/genproto"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
+	rpclog "github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog"
 )
 
 const (
@@ -54,10 +67,15 @@ func init() {
 }
 
 func main() {
-	if os.Getenv("DISABLE_TRACING") == "" {
-		log.Info("Tracing enabled, but temporarily unavailable")
-		log.Info("See https://github.com/GoogleCloudPlatform/microservices-demo/issues/422 for more info.")
-		go initTracing()
+	ctx := context.Background()
+
+	// OpenTelemetry tracing (added by M1.3; brings shippingservice to fleet
+	// parity with checkoutservice / frontend / productcatalogservice).
+	// Honor ENABLE_TRACING (set by the OTel-enable deployment patch) and
+	// keep DISABLE_TRACING as a kill-switch for local debugging.
+	if os.Getenv("ENABLE_TRACING") == "1" && os.Getenv("DISABLE_TRACING") == "" {
+		log.Info("Tracing enabled.")
+		initTracing()
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -67,6 +85,17 @@ func main() {
 		go initProfiling("shippingservice", "1.0.0")
 	} else {
 		log.Info("Profiling disabled.")
+	}
+
+	// M4.1: Prometheus /metrics endpoint on a separate port.
+	metricsPort := 9100
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			metricsPort = p
+		}
+	}
+	if _, err := rpclog.InitMetrics(log, metricsPort); err != nil {
+		log.Warnf("metrics init failed: %v", err)
 	}
 
 	port := defaultPort
@@ -80,14 +109,17 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	var srv *grpc.Server
-	if os.Getenv("DISABLE_STATS") == "" {
-		log.Info("Stats enabled, but temporarily unavailable")
-		srv = grpc.NewServer()
-	} else {
-		log.Info("Stats disabled.")
-		srv = grpc.NewServer()
-	}
+	// Propagate trace context always (W3C TraceContext + Baggage), matching
+	// the rest of the Go fleet (checkoutservice/main.go pattern).
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
+
+	srv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.UnaryInterceptor(rpclog.UnaryServerInterceptor(log)),
+		grpc.StreamInterceptor(rpclog.StreamServerInterceptor(log)),
+	)
 	svc := &server{}
 	pb.RegisterShippingServiceServer(srv, svc)
 	healthcheck := health.NewServer()
@@ -99,6 +131,8 @@ func main() {
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
+
+	_ = ctx
 }
 
 // server controls RPC service responses.
@@ -127,6 +161,13 @@ func (s *server) GetQuote(ctx context.Context, in *pb.GetQuoteRequest) (*pb.GetQ
 	}
 	quote := CreateQuoteFromCount(count)
 
+	// M3.2: bounded app attribute on the active span (which is the server
+	// span the otelgrpc handler created). Production-realistic — every
+	// shipping API exposes some form of size/weight bucket.
+	oteltrace.SpanFromContext(ctx).SetAttributes(
+		attribute.Int("app.shipping.item_count", count),
+	)
+
 	// 2. Generate a response.
 	return &pb.GetQuoteResponse{
 		CostUsd: &pb.Money{
@@ -152,12 +193,35 @@ func (s *server) ShipOrder(ctx context.Context, in *pb.ShipOrderRequest) (*pb.Sh
 	}, nil
 }
 
-func initStats() {
-	//TODO(arbrown) Implement OpenTelemetry stats
-}
-
+// initTracing wires up the OTLP gRPC trace exporter to the OTel collector.
+// Mirrors checkoutservice/main.go:initTracing — AlwaysSample for research,
+// see docs/telemetry-implementation-decisions.md M0.6 for why.
 func initTracing() {
-	// TODO(arbrown) Implement OpenTelemetry tracing
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+	defer cancel()
+
+	collectorAddr := os.Getenv("COLLECTOR_SERVICE_ADDR")
+	if collectorAddr == "" {
+		log.Warn("COLLECTOR_SERVICE_ADDR not set; tracing not initialized")
+		return
+	}
+
+	collectorConn, err := grpc.NewClient(collectorAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Warnf("warn: failed to dial collector: %v", errors.Wrap(err, "grpc dial"))
+		return
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(collectorConn))
+	if err != nil {
+		log.Warnf("warn: Failed to create trace exporter: %v", err)
+		return
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(tp)
 }
 
 func initProfiling(service, version string) {

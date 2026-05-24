@@ -31,14 +31,29 @@ import demo_pb2_grpc
 from grpc_health.v1 import health_pb2
 from grpc_health.v1 import health_pb2_grpc
 
-from opentelemetry import trace
+from opentelemetry import trace, metrics
 from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient, GrpcInstrumentorServer
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
+# M4.1: Prometheus metric exporter on a separate port. Stdlib http.server.
+try:
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.exporter.prometheus import PrometheusMetricReader
+    from prometheus_client import start_http_server
+    _METRICS_AVAILABLE = True
+except ImportError:
+    _METRICS_AVAILABLE = False
+
 from logger import getJSONLogger
 logger = getJSONLogger('recommendationservice-server')
+
+# M2.1: shared per-RPC structured logging interceptor.
+from rpc_logging import RpcLoggingInterceptor
+
+# M4.4: recommendations_served_total counter (initialized lazily in main()).
+recommendations_served_total = None
 
 def initStackdriverProfiling():
   project_id = None
@@ -68,9 +83,27 @@ def initStackdriverProfiling():
 
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
+        from opentelemetry.trace import Status, StatusCode  # M3.1 / M3.2
+
+        span = trace.get_current_span()
         max_responses = 5
-        # fetch list of products from product catalog stub
-        cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
+        try:
+            # M3.2: child span for the productcatalog dep call.
+            tracer = trace.get_tracer("recommendationservice")
+            with tracer.start_as_current_span(
+                "productcatalog.ListProducts",
+                attributes={
+                    "peer.service": "productcatalogservice",
+                    "rpc.method": "ListProducts",
+                },
+            ):
+                cat_response = product_catalog_stub.ListProducts(demo_pb2.Empty())
+        except Exception as exc:
+            # M3.1: dep call failed; record on the server span too.
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, "productcatalog lookup failed"))
+            raise
+
         product_ids = [x.id for x in cat_response.products]
         filtered_products = list(set(product_ids)-set(request.product_ids))
         num_products = len(filtered_products)
@@ -80,6 +113,15 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
         # fetch product ids from indices
         prod_list = [filtered_products[i] for i in indices]
         logger.info("[Recv ListRecommendations] product_ids={}".format(prod_list))
+        # M4.4: bounded count attribute on the server span + counter.
+        span.set_attribute("app.recommendations.returned_count", len(prod_list))
+        if recommendations_served_total is not None:
+            recommendations_served_total.add(1)
+        # M2.3 business event log.
+        logger.info("recommendation_returned", extra={
+            "event": "recommendation_returned",
+            "count": len(prod_list),
+        })
         # build and return response
         response = demo_pb2.ListRecommendationsResponse()
         response.product_ids.extend(prod_list)
@@ -125,7 +167,25 @@ if __name__ == "__main__":
     except (KeyError, DefaultCredentialsError):
         logger.info("Tracing disabled.")
     except Exception as e:
-        logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
+        logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.")
+
+    # M4.1 + M4.4: Prometheus /metrics endpoint and the
+    # recommendations_served_total counter.
+    if _METRICS_AVAILABLE:
+        try:
+            metrics_port = int(os.getenv("METRICS_PORT", "9100"))
+            reader = PrometheusMetricReader()
+            mp = MeterProvider(metric_readers=[reader])
+            metrics.set_meter_provider(mp)
+            start_http_server(metrics_port)
+            meter = metrics.get_meter("recommendationservice")
+            recommendations_served_total = meter.create_counter(
+                "recommendations_served_total",
+                description="Count of ListRecommendations responses returned.",
+            )
+            logger.info(f"Prometheus /metrics endpoint listening on :{metrics_port}")
+        except Exception as e:
+            logger.warn(f"metrics setup failed: {e}")
 
     port = os.environ.get('PORT', "8080")
     catalog_addr = os.environ.get('PRODUCT_CATALOG_SERVICE_ADDR', '')
@@ -135,8 +195,11 @@ if __name__ == "__main__":
     channel = grpc.insecure_channel(catalog_addr)
     product_catalog_stub = demo_pb2_grpc.ProductCatalogServiceStub(channel)
 
-    # create gRPC server
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # create gRPC server with the shared M2.1 RPC logging interceptor.
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        interceptors=[RpcLoggingInterceptor(logger)],
+    )
 
     # add class to gRPC server
     service = RecommendationService()

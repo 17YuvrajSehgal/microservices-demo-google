@@ -6,3 +6,8 @@ rsa==4.9.1
 opentelemetry-distro==0.60b1
 opentelemetry-instrumentation-grpc==0.60b1
 opentelemetry-exporter-otlp-proto-grpc==1.39.1
+opentelemetry-exporter-prometheus==0.60b1
+prometheus-client==0.20.0
+# M2.1: shared per-RPC logging interceptor. Installed via the Dockerfile
+# with `pip install -e ../_shared-python/rpc_logging`.
+# hipstershop-rpc-logging  # editable install; not pinned here

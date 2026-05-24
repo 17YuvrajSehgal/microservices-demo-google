@@ -21,6 +21,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -39,6 +40,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
+
+	rpclog "github.com/GoogleCloudPlatform/microservices-demo/src/_shared-go/rpclog"
 )
 
 var (
@@ -130,9 +133,24 @@ func run(port string) string {
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{}))
+	// M4.1: Prometheus /metrics endpoint on a separate port.
+	metricsPort := 9100
+	if v := os.Getenv("METRICS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			metricsPort = p
+		}
+	}
+	if _, err := rpclog.InitMetrics(log, metricsPort); err != nil {
+		log.Warnf("metrics init failed: %v", err)
+	}
+	initCatalogMetrics()
+
 	var srv *grpc.Server
 	srv = grpc.NewServer(
-		grpc.StatsHandler(otelgrpc.NewServerHandler()))
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.UnaryInterceptor(rpclog.UnaryServerInterceptor(log)),
+		grpc.StreamInterceptor(rpclog.StreamServerInterceptor(log)),
+	)
 
 	svc := &productCatalog{}
 	err = loadCatalog(&svc.catalog)

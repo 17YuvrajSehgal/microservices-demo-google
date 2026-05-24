@@ -13,21 +13,44 @@
 // limitations under the License.
 
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Grpc.Core;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Logging;
 using Google.Protobuf;
+using OpenTelemetry.Trace;
 
 namespace cartservice.cartstore
 {
     public class RedisCartStore : ICartStore
     {
         private readonly IDistributedCache _cache;
+        private readonly ILogger<RedisCartStore> _log;
 
-        public RedisCartStore(IDistributedCache cache)
+        public RedisCartStore(IDistributedCache cache, ILogger<RedisCartStore> log)
         {
             _cache = cache;
+            _log = log;
+        }
+
+        // M2.2: structured dep-boundary error log. Fields {dep, op, err_class}
+        // match the Go interceptor field set in src/_shared-go/rpclog.
+        private void LogRedisError(string op, Exception ex)
+        {
+            _log.Log(LogLevel.Error, new EventId(2, "dep_error"),
+                new
+                {
+                    dep = "redis-cart",
+                    op = op,
+                    err_class = ex.GetType().Name,
+                    retry_attempt = 0,
+                    trace_id = Activity.Current?.TraceId.ToString() ?? "",
+                    span_id = Activity.Current?.SpanId.ToString() ?? "",
+                },
+                ex,
+                (state, e) => $"dep_error dep=redis-cart op={op} err={ex.GetType().Name}");
         }
 
         public async Task AddItemAsync(string userId, string productId, int quantity)
@@ -61,6 +84,14 @@ namespace cartservice.cartstore
             }
             catch (Exception ex)
             {
+                // M3.1: record on the active span so the failure is visible in Tempo,
+                // not just in the gRPC envelope status. Also adds a "redis.op" attribute
+                // tying the error to the Redis dependency boundary (M3.2 enrichment).
+                Activity.Current?.RecordException(ex);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "redis cart storage error");
+                Activity.Current?.SetTag("db.system", "redis");
+                Activity.Current?.SetTag("db.operation", "AddItem");
+                LogRedisError("AddItem", ex);
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
@@ -76,6 +107,12 @@ namespace cartservice.cartstore
             }
             catch (Exception ex)
             {
+                // M3.1 + M3.2.
+                Activity.Current?.RecordException(ex);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "redis cart storage error");
+                Activity.Current?.SetTag("db.system", "redis");
+                Activity.Current?.SetTag("db.operation", "EmptyCart");
+                LogRedisError("EmptyCart", ex);
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
@@ -99,6 +136,12 @@ namespace cartservice.cartstore
             }
             catch (Exception ex)
             {
+                // M3.1 + M3.2.
+                Activity.Current?.RecordException(ex);
+                Activity.Current?.SetStatus(ActivityStatusCode.Error, "redis cart storage error");
+                Activity.Current?.SetTag("db.system", "redis");
+                Activity.Current?.SetTag("db.operation", "GetCart");
+                LogRedisError("GetCart", ex);
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
