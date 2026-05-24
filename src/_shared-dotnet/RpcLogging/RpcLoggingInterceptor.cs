@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry.Trace; // for Activity.RecordException extension method
 
 namespace Hipstershop.RpcLogging
 {
@@ -80,58 +81,22 @@ namespace Hipstershop.RpcLogging
                 var traceId = activity?.TraceId.ToString() ?? "";
                 var spanId = activity?.SpanId.ToString() ?? "";
 
-                // Structured log via Microsoft.Extensions.Logging. The JSON
-                // console formatter on the cartservice host will emit each
-                // field as a top-level JSON key, matching the Go/Node/Python
-                // shape.
-                _logger.Log(
-                    LogLevel.Information,
-                    new EventId(1, "rpc"),
-                    new RpcLogState(
-                        traceId: traceId,
-                        spanId: spanId,
-                        method: context.Method,
-                        peerService: context.Peer ?? "unknown",
-                        latencyMs: sw.ElapsedMilliseconds,
-                        statusCode: statusCode,
-                        errClass: errClass,
-                        kind: "rpc.server"),
-                    exception: null,
-                    formatter: (state, _) => state.ToString());
+                // D13.14d-followup: emit via a structured-logging message
+                // template so the JsonConsole formatter renders each named
+                // parameter as a top-level JSON key. With the default text
+                // formatter these were stripped — see the M5.2d cross-check
+                // gap. Field names match the Go/Node/Python shape.
+                _logger.LogInformation(
+                    "rpc method={method} status_code={status_code} latency_ms={latency_ms} peer_service={peer_service} kind={kind} err_class={err_class} trace_id={trace_id} span_id={span_id}",
+                    context.Method,
+                    statusCode,
+                    sw.ElapsedMilliseconds,
+                    context.Peer ?? "unknown",
+                    "rpc.server",
+                    errClass,
+                    traceId,
+                    spanId);
             }
         }
-    }
-
-    /// <summary>
-    /// Strongly-typed log state so the JSON console formatter emits each
-    /// field as a top-level JSON key.
-    /// </summary>
-    internal sealed class RpcLogState
-    {
-        public string trace_id { get; }
-        public string span_id { get; }
-        public string method { get; }
-        public string peer_service { get; }
-        public long latency_ms { get; }
-        public string status_code { get; }
-        public string err_class { get; }
-        public string kind { get; }
-
-        public RpcLogState(string traceId, string spanId, string method,
-            string peerService, long latencyMs, string statusCode,
-            string errClass, string kind)
-        {
-            trace_id = traceId;
-            span_id = spanId;
-            this.method = method;
-            peer_service = peerService;
-            latency_ms = latencyMs;
-            status_code = statusCode;
-            err_class = errClass;
-            this.kind = kind;
-        }
-
-        public override string ToString() =>
-            $"rpc method={method} status={status_code} latency_ms={latency_ms}";
     }
 }

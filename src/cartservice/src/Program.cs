@@ -14,12 +14,31 @@
 
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using cartservice;
 
 CreateHostBuilder(args).Build().Run();
 
 static IHostBuilder CreateHostBuilder(string[] args) =>
     Host.CreateDefaultBuilder(args)
+        .ConfigureLogging(logging =>
+        {
+            // D13.14d-followup: replace the default text console formatter
+            // with JsonConsole so structured log fields (trace_id, span_id,
+            // method, status_code, ...) appear as top-level JSON keys.
+            // Required for the L1 RpcLoggingInterceptor and L2 dep_error
+            // logs to be parseable by the dataset exporter.
+            logging.ClearProviders();
+            logging.AddJsonConsole(o =>
+            {
+                o.IncludeScopes = true;
+                o.UseUtcTimestamp = true;
+                o.JsonWriterOptions = new System.Text.Json.JsonWriterOptions
+                {
+                    Indented = false,
+                };
+            });
+        })
         .ConfigureWebHostDefaults(webBuilder =>
         {
             webBuilder.UseStartup<Startup>();

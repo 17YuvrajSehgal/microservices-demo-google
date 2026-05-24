@@ -60,14 +60,40 @@ if(process.env.ENABLE_TRACING == "1") {
 
   const collectorUrl = process.env.COLLECTOR_SERVICE_ADDR;
   const traceExporter = new OTLPTraceExporter({url: collectorUrl});
+
+  // M4.1: Prometheus metric exporter — exposes /metrics on METRICS_PORT.
+  let metricReader;
+  try {
+    const { PrometheusExporter } = require('@opentelemetry/exporter-prometheus');
+    const metricsPort = parseInt(process.env.METRICS_PORT || '9100', 10);
+    metricReader = new PrometheusExporter({ port: metricsPort });
+    logger.info(`Prometheus /metrics endpoint listening on :${metricsPort}`);
+  } catch (e) {
+    logger.warn(`Prometheus exporter init failed: ${e.message}`);
+  }
+
   const sdk = new opentelemetry.NodeSDK({
     resource: resourceFromAttributes({
       [ ATTR_SERVICE_NAME ]: process.env.OTEL_SERVICE_NAME || 'currencyservice',
     }),
     traceExporter: traceExporter,
+    metricReader: metricReader,
   });
 
   sdk.start()
+
+  // M4.5a (Node): runtime metrics — process.runtime.nodejs.*.
+  try {
+    const { HostMetrics } = require('@opentelemetry/host-metrics');
+    const { metrics } = require('@opentelemetry/api');
+    const hostMetrics = new HostMetrics({
+      meterProvider: metrics.getMeterProvider(),
+      name: 'currencyservice-host-metrics',
+    });
+    hostMetrics.start();
+  } catch (e) {
+    logger.warn(`host-metrics init failed: ${e.message}`);
+  }
 }
 else {
   logger.info("Tracing disabled.")

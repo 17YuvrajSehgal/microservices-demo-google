@@ -169,9 +169,10 @@ namespace cartservice
             app.UseRouting();
 
             // Prometheus scrape endpoint at /metrics (M4.1).
-            // Mounted under the same port (7070) as the gRPC server so we
-            // don't need a second containerPort. Prometheus scrapes HTTP, gRPC
-            // clients ignore HTTP routes.
+            // Bound to the dedicated HTTP/1 Kestrel endpoint on port 9100
+            // (see appsettings.json Kestrel.Endpoints.Metrics). The gRPC
+            // server stays HTTP/2-only on port 7070, so a Prometheus
+            // HTTP/1 scrape against /metrics on 9100 is what works.
             //
             // Guarded by the same ENABLE_TRACING gate that wires OTel in
             // ConfigureServices. Without the gate, this throws at startup
@@ -182,7 +183,8 @@ namespace cartservice
                     StringComparison.OrdinalIgnoreCase);
             if (enableTracing)
             {
-                app.UseOpenTelemetryPrometheusScrapingEndpoint();
+                app.UseOpenTelemetryPrometheusScrapingEndpoint(
+                    context => context.Connection.LocalPort == 9100);
             }
 
             app.UseEndpoints(endpoints =>

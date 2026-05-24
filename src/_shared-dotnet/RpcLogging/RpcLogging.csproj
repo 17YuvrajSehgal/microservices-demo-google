@@ -9,6 +9,10 @@
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <!-- Provides the Activity.RecordException extension method used by
+         M3.1 in RpcLoggingInterceptor. cartservice already references the
+         same package; this avoids cross-project version drift. -->
+    <PackageReference Include="OpenTelemetry.Api" Version="1.9.0" />
   </ItemGroup>
 
 </Project>

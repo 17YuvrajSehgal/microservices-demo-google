@@ -71,6 +71,22 @@ if (process.env.ENABLE_TRACING == "1") {
   });
 
   sdk.start()
+
+  // M4.5a (Node): runtime metrics — process.runtime.nodejs.* (heap,
+  // event-loop, GC, CPU). Started after sdk.start() so the global
+  // MeterProvider exists. Production-realistic — every Node SRE setup
+  // exposes these.
+  try {
+    const { HostMetrics } = require('@opentelemetry/host-metrics');
+    const { metrics } = require('@opentelemetry/api');
+    const hostMetrics = new HostMetrics({
+      meterProvider: metrics.getMeterProvider(),
+      name: 'paymentservice-host-metrics',
+    });
+    hostMetrics.start();
+  } catch (e) {
+    logger.warn(`host-metrics init failed: ${e.message}`);
+  }
 } else {
   logger.info("Tracing disabled.")
 }
