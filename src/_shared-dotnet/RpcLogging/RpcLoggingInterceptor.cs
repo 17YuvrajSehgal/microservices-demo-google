@@ -51,12 +51,26 @@ namespace Hipstershop.RpcLogging
             {
                 statusCode = ex.StatusCode.ToString();
                 errClass = ex.StatusCode.ToString();
+                // M3.1: enrich the active span so Tempo sees the error,
+                // not just the L1 log line.
+                var act = Activity.Current;
+                if (act != null)
+                {
+                    act.RecordException(ex);
+                    act.SetStatus(ActivityStatusCode.Error, ex.StatusCode.ToString());
+                }
                 throw;
             }
             catch (Exception ex)
             {
                 statusCode = "INTERNAL";
                 errClass = ex.GetType().Name;
+                var act = Activity.Current;
+                if (act != null)
+                {
+                    act.RecordException(ex);
+                    act.SetStatus(ActivityStatusCode.Error, ex.GetType().Name);
+                }
                 throw;
             }
             finally

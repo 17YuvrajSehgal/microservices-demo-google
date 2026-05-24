@@ -89,6 +89,10 @@ type frontendServer struct {
 	collectorConn *grpc.ClientConn
 
 	shoppingAssistantSvcAddr string
+
+	// depLog is used by rpc.go's recordDepError helper (M2.2 L2 logs).
+	// Set in main() to the same logrus instance the rest of the service uses.
+	depLog *logrus.Logger
 }
 
 func main() {
@@ -106,6 +110,7 @@ func main() {
 	log.Out = os.Stdout
 
 	svc := new(frontendServer)
+	svc.depLog = log
 
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(

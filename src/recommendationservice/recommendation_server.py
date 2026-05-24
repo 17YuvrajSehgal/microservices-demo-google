@@ -102,6 +102,18 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
             # M3.1: dep call failed; record on the server span too.
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, "productcatalog lookup failed"))
+            # M2.2: structured L2 dep-error log. Bounded fields only.
+            sc = span.get_span_context()
+            dep_fields = {
+                "dep": "productcatalogservice",
+                "op": "ListProducts",
+                "err_class": type(exc).__name__,
+                "retry_attempt": 0,
+            }
+            if sc and sc.is_valid:
+                dep_fields["trace_id"] = format(sc.trace_id, "032x")
+                dep_fields["span_id"] = format(sc.span_id, "016x")
+            logger.error("dep_error", extra=dep_fields)
             raise
 
         product_ids = [x.id for x in cat_response.products]

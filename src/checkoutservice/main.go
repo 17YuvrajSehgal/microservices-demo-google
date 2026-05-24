@@ -48,9 +48,14 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-// M3.1 + M3.2: helper that records a dep-call failure on the active span.
-// Sets bounded semantic-convention attributes (peer.service, db.operation
-// where applicable) so Tempo's structured search can find these spans.
+// recordDepError covers two L2/L3 tasks at one call site:
+//   - M3.1 + M3.2: enrich the active span with RecordError, Error status,
+//     and bounded peer.service / rpc.method attributes.
+//   - M2.2 (L2): emit one structured JSON log line per dep failure with
+//     {dep, op, err_class, retry_attempt, trace_id, span_id}. The L1 client
+//     interceptor already logs every outbound RPC; this L2 line is the
+//     dedicated, parse-friendly signal grep'd from postmortems.
+//
 // No scenario/fault names — production-realistic only.
 func recordDepError(ctx context.Context, peerService, op string, err error) {
 	if err == nil {
@@ -63,6 +68,33 @@ func recordDepError(ctx context.Context, peerService, op string, err error) {
 		attribute.String("peer.service", peerService),
 		attribute.String("rpc.method", op),
 	)
+
+	// M2.2: structured L2 dep-error log.
+	fields := logrus.Fields{
+		"dep":           peerService,
+		"op":            op,
+		"err_class":     errClassOf(err),
+		"retry_attempt": 0, // checkoutservice does not retry deps today
+	}
+	sc := span.SpanContext()
+	if sc.IsValid() {
+		fields["trace_id"] = sc.TraceID().String()
+		fields["span_id"] = sc.SpanID().String()
+	}
+	log.WithFields(fields).Error("dep_error")
+}
+
+// errClassOf returns a short, bounded identifier for an error. Mirrors
+// the rpclog shared helper but kept local to avoid an extra dependency on
+// internal rpclog symbols.
+func errClassOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	if s, ok := status.FromError(err); ok {
+		return s.Code().String()
+	}
+	return "Unknown"
 }
 
 // orderItemsBucket returns a low-cardinality bucket label for an item count.
