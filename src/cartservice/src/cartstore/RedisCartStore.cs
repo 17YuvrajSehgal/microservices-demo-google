@@ -92,7 +92,7 @@ namespace cartservice.cartstore
                 Activity.Current?.SetTag("db.system", "redis");
                 Activity.Current?.SetTag("db.operation", "AddItem");
                 LogRedisError("AddItem", ex);
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
+                throw new RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
 
@@ -113,7 +113,7 @@ namespace cartservice.cartstore
                 Activity.Current?.SetTag("db.system", "redis");
                 Activity.Current?.SetTag("db.operation", "EmptyCart");
                 LogRedisError("EmptyCart", ex);
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
+                throw new RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
 
@@ -142,7 +142,7 @@ namespace cartservice.cartstore
                 Activity.Current?.SetTag("db.system", "redis");
                 Activity.Current?.SetTag("db.operation", "GetCart");
                 LogRedisError("GetCart", ex);
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
+                throw new RpcException(new Grpc.Core.Status(Grpc.Core.StatusCode.FailedPrecondition, $"Can't access cart storage. {ex}"));
             }
         }
 

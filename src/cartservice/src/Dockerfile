@@ -12,18 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Build context: microservices-demo-google/src/ (parent of cartservice/ and
+# _shared-dotnet/). The ProjectReference in cartservice.csproj resolves
+# ../../_shared-dotnet/RpcLogging/RpcLogging.csproj relative to
+# cartservice/src/, so both trees must be visible to the builder.
+
 # Define a default value so it's not empty if the builder fails to provide it
 ARG BUILDPLATFORM=linux/amd64
 
 # https://mcr.microsoft.com/product/dotnet/sdk
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.100-noble@sha256:c7445f141c04f1a6b454181bd098dcfa606c61ba0bd213d0a702489e5bd4cd71 AS builder
 ARG TARGETARCH=amd64
-WORKDIR /app
-COPY cartservice.csproj .
-RUN dotnet restore cartservice.csproj \
-    -a $TARGETARCH
-COPY . .
-RUN dotnet publish cartservice.csproj \
+WORKDIR /src
+
+# Copy csproj files first to maximise restore-layer cache.
+COPY cartservice/src/cartservice.csproj cartservice/src/
+COPY _shared-dotnet/RpcLogging/RpcLogging.csproj _shared-dotnet/RpcLogging/
+
+RUN dotnet restore cartservice/src/cartservice.csproj -a $TARGETARCH
+
+# Now copy the actual sources for both projects.
+COPY cartservice/src/ cartservice/src/
+COPY _shared-dotnet/RpcLogging/ _shared-dotnet/RpcLogging/
+
+RUN dotnet publish cartservice/src/cartservice.csproj \
     -p:PublishSingleFile=true \
     -a $TARGETARCH \
     --self-contained true \

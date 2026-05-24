@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Define a default value so it's not empty if the builder fails to provide it
+# Build context: microservices-demo-google/src/
+
 ARG BUILDPLATFORM=linux/amd64
 
 FROM --platform=$BUILDPLATFORM python:3.14.4-alpine@sha256:dd4d2bd5b53d9b25a51da13addf2be586beebd5387e289e798e4083d94ca837a AS base
@@ -26,9 +27,12 @@ RUN apk update \
     && apk add --no-cache g++ linux-headers \
     && rm -rf /var/cache/apk/*
 
-# get packages
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+WORKDIR /src
+COPY _shared-python/ _shared-python/
+COPY emailservice/requirements.txt emailservice/
+
+RUN pip install /src/_shared-python/rpc_logging
+RUN pip install -r emailservice/requirements.txt
 
 FROM base
 
@@ -44,11 +48,9 @@ RUN apk update \
 
 WORKDIR /email_server
 
-# Grab packages from builder
 COPY --from=builder /usr/local/lib/python3.14/ /usr/local/lib/python3.14/
 
-# Add the application
-COPY . .
+COPY emailservice/ ./
 
 EXPOSE 8080
 ENTRYPOINT [ "python", "email_server.py" ]

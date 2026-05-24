@@ -172,7 +172,18 @@ namespace cartservice
             // Mounted under the same port (7070) as the gRPC server so we
             // don't need a second containerPort. Prometheus scrapes HTTP, gRPC
             // clients ignore HTTP routes.
-            app.UseOpenTelemetryPrometheusScrapingEndpoint();
+            //
+            // Guarded by the same ENABLE_TRACING gate that wires OTel in
+            // ConfigureServices. Without the gate, this throws at startup
+            // when ENABLE_TRACING is unset because MeterProvider is missing
+            // from DI.
+            var enableTracing = Configuration["ENABLE_TRACING"] == "1"
+                || string.Equals(Configuration["ENABLE_TRACING"], "true",
+                    StringComparison.OrdinalIgnoreCase);
+            if (enableTracing)
+            {
+                app.UseOpenTelemetryPrometheusScrapingEndpoint();
+            }
 
             app.UseEndpoints(endpoints =>
             {
