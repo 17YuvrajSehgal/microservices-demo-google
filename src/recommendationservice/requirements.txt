@@ -99,3 +99,9 @@ wrapt==1.16.0
     #   opentelemetry-instrumentation-grpc
 zipp==3.19.1
     # via importlib-metadata
+
+# Appended 2026-05-25 — M4.1f follow-up: requirements.in had these but
+# the lockfile wasn't regenerated. /metrics:9100 never came up because
+# import opentelemetry.exporter.prometheus failed silently.
+opentelemetry-exporter-prometheus==0.60b1
+prometheus-client==0.20.0

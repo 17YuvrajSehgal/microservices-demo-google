@@ -8,3 +8,5 @@ requests==2.32.5
 opentelemetry-distro==0.60b1
 opentelemetry-instrumentation-grpc==0.60b1
 opentelemetry-exporter-otlp-proto-grpc==1.39.1
+opentelemetry-exporter-prometheus==0.60b1
+prometheus-client==0.20.0

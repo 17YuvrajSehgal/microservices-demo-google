@@ -118,3 +118,7 @@ wrapt==1.16.0
     #   opentelemetry-instrumentation-grpc
 zipp==3.19.1
     # via importlib-metadata
+
+# Appended 2026-05-25 — M4.1f follow-up. Same gap as recommendationservice.
+opentelemetry-exporter-prometheus==0.60b1
+prometheus-client==0.20.0
