@@ -30,11 +30,21 @@ import demo_pb2_grpc
 from grpc_health.v1 import health_pb2
 from grpc_health.v1 import health_pb2_grpc
 
-from opentelemetry import trace
+from opentelemetry import trace, metrics
 from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+# M4.1: Prometheus metric exporter on a separate port. Lazy import so missing
+# package doesn't crash startup (same pattern as recommendation_server.py).
+try:
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.exporter.prometheus import PrometheusMetricReader
+    from prometheus_client import start_http_server
+    _METRICS_AVAILABLE = True
+except ImportError:
+    _METRICS_AVAILABLE = False
 
 # @TODO: Temporarily removed in https://github.com/GoogleCloudPlatform/microservices-demo/pull/3196
 # import googlecloudprofiler
@@ -210,6 +220,25 @@ if __name__ == '__main__':
   except (KeyError, DefaultCredentialsError):
       logger.info("Tracing disabled.")
   except Exception as e:
-      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
-  
+      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.")
+
+  # M4.1 / M4.5: Prometheus /metrics endpoint on a separate port (default
+  # 9100). Just start the prometheus_client HTTP server — gives us the
+  # default python_gc_* and process_* runtime gauges from the global
+  # REGISTRY. Deliberately NOT wiring an OTel MeterProvider here: doing
+  # so in recommendation_server.py works fine, but in emailservice it
+  # causes the gRPC server thread to deadlock after a few seconds
+  # (livenessprobe fails, CrashLoopBackOff). If we need OTel-emitted
+  # business counters from emailservice later, revisit with a separate
+  # thread-pool isolated reader.
+  if _METRICS_AVAILABLE:
+      try:
+          metrics_port = int(os.getenv("METRICS_PORT", "9100"))
+          start_http_server(metrics_port)
+          logger.info(f"Prometheus /metrics endpoint listening on :{metrics_port}")
+      except Exception as e:
+          logger.warn(f"Prometheus exporter init failed: {e}")
+  else:
+      logger.info("Prometheus exporter packages not installed; /metrics disabled.")
+
   start(dummy_mode = True)
